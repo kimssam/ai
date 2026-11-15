@@ -221,12 +221,14 @@ footer{text-align:center;color:var(--dim);font-size:17px;padding:40px 20px 60px;
 <!-- 관리자 모드 -->
 <div class="abar" id="abar">
   <span class="atitle">✏ 관리자 모드</span>
-  <button data-act="export" class="ap">💾 새 HTML 내려받기</button>
+  <button data-act="deploy" class="ap">🚀 배포</button>
+  <button data-act="export">💾 HTML 내려받기</button>
   <button data-act="undo">↶ 실행 취소</button>
   <button data-act="addcard">＋ 실습 추가</button>
   <button data-act="files">📁 실습자료 관리</button>
   <button data-act="banner">🖼 배너 교체</button>
   <button data-act="settings">⚙ 설정</button>
+  <button data-act="ghsetup">🔑 배포 설정</button>
   <button data-act="preview">👁 미리보기</button>
   <button data-act="exit">종료</button>
   <span class="astat" id="astat"></span>
@@ -341,11 +343,11 @@ window.addEventListener('hashchange',go);
 document.addEventListener('input',e=>{const el=e.target.closest('[data-p]');if(!el||!A)return;let v=el.innerText.replace(/ /g,' ');if(!el.dataset.m)v=v.replace(/\n+/g,' ');if(v.endsWith('\n')&&el.dataset.m)v=v.replace(/\n$/,'');setP(el.dataset.p,v);dirty()});
 document.addEventListener('paste',e=>{const el=e.target.closest('[data-p]');if(!el)return;e.preventDefault();const t=(e.clipboardData||window.clipboardData).getData('text/plain');document.execCommand('insertText',false,t)});
 document.addEventListener('keydown',e=>{const el=e.target.closest('[data-p]');if(el&&!el.dataset.m&&e.key==='Enter'){e.preventDefault();el.blur()}
-  if(A&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();exportHTML()}
+  if(A&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();(D.site.gh&&D.site.gh.repo?deploy(false):exportHTML())}
   if(A&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!e.target.closest('[data-p]')){e.preventDefault();undo()}});
 document.addEventListener('focusout',e=>{if(e.target.closest&&e.target.closest('[data-p]'))snapshotSoft()});
 let changed=false,saveT;
-function dirty(){changed=true;clearTimeout(saveT);saveT=setTimeout(()=>{try{localStorage.setItem(KEY,JSON.stringify({t:Date.now(),d:D}))}catch(x){}},600);$('#astat').textContent='저장 안 된 변경 있음 · 「새 HTML 내려받기」로 저장하세요'}
+function dirty(){changed=true;clearTimeout(saveT);saveT=setTimeout(()=>{try{localStorage.setItem(KEY,JSON.stringify({t:Date.now(),d:D}))}catch(x){}},600);$('#astat').textContent='저장 안 된 변경 있음 · 「🚀 배포」를 누르면 사이트에 반영됩니다'}
 function snap(){HIST.push(JSON.stringify(D));if(HIST.length>40)HIST.shift()}
 let lastSoft='';function snapshotSoft(){const s=JSON.stringify(D);if(s!==lastSoft){lastSoft=s}}
 function undo(){if(!HIST.length){toast('되돌릴 작업이 없습니다.');return}D=JSON.parse(HIST.pop());render();dirty();toast('한 단계 되돌렸습니다.')}
@@ -391,18 +393,68 @@ function settings(){modal(`<h3>설정</h3>
   $('#sReset').onclick=()=>{snap();D=JSON.parse(ORIG);closeModal();render();dirty();toast('처음 받은 상태로 되돌렸습니다. (실행 취소 가능)')}}
 
 /* ---------- 관리자: 내보내기 ---------- */
-function exportHTML(){
+function buildHTML(extra){
   const out=JSON.parse(JSON.stringify(D));const used=usedFiles();Object.keys(out.FILES).forEach(k=>{if(!used[k])delete out.FILES[k]});
-  // 번호를 데이터에도 기록(참고용)
+  if(extra)Object.assign(out.site,extra);
   const json=JSON.stringify(out).replace(/</g,'\\u003c');
-  const start=SRC.indexOf('<script type="application/json" id="appdata">');const end=SRC.indexOf('<'+'/script>',start);
-  if(start<0||end<0){toast('내보내기 실패: 원본 구조를 찾지 못했습니다.');return}
-  const html=SRC.slice(0,start)+'<script type="application/json" id="appdata">'+json+SRC.slice(end);
+  const tag='<script type="application/json" id="appdata">';
+  const start=SRC.indexOf(tag);const end=SRC.indexOf('<'+'/script>',start);
+  if(start<0||end<0)throw new Error('원본 구조를 찾지 못했습니다.');
+  return SRC.slice(0,start)+tag+json+SRC.slice(end)}
+function exportHTML(){let html;try{html=buildHTML()}catch(x){toast('내보내기 실패: '+x.message);return}
   const d=new Date(),p=n=>String(n).padStart(2,'0');
   saveBlob(new Blob([html],{type:'text/html'}),`index_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.html`);
   changed=false;try{localStorage.removeItem(KEY)}catch(x){}
   $('#astat').textContent='내려받았습니다. 파일 이름을 index.html로 바꿔 서버에 올리세요.';
   toast('새 HTML을 내려받았습니다.')}
+
+/* ---------- 관리자: GitHub 배포 ---------- */
+const TK='youngcodi-gh-token';
+function ghTok(){try{return sessionStorage.getItem(TK)||localStorage.getItem(TK)||''}catch(x){return''}}
+function ghCfg(){return Object.assign({owner:'',repo:'',branch:'main',path:'index.html'},D.site.gh||{})}
+function siteURL(g){return g.repo.toLowerCase()===(g.owner+'.github.io').toLowerCase()?`https://${g.owner}.github.io/`:`https://${g.owner}.github.io/${g.repo}/`}
+function ghSetup(then){const g=ghCfg();
+  modal(`<h3>GitHub 배포 설정</h3><p class="mh">한 번만 설정하면 이후에는 「🚀 배포」 버튼 한 번으로 사이트가 바로 바뀝니다.</p>
+  <label class="ml">GitHub 아이디 (owner)</label><input class="minput" id="gOwner" value="${esc(g.owner)}" placeholder="예: kimssam">
+  <label class="ml">저장소 이름 (repository)</label><input class="minput" id="gRepo" value="${esc(g.repo)}" placeholder="예: hscity-ai">
+  <label class="ml">브랜치 / 파일 경로</label><div style="display:flex;gap:8px"><input class="minput" id="gBranch" value="${esc(g.branch)}"><input class="minput" id="gPath" value="${esc(g.path)}"></div>
+  <label class="ml">액세스 토큰 (Fine-grained token · Contents 읽기/쓰기)</label><input class="minput" id="gTok" type="password" value="${esc(ghTok())}" placeholder="github_pat_로 시작">
+  <label class="ml" style="font-weight:500"><input type="checkbox" id="gRem" ${(()=>{try{return localStorage.getItem(TK)?'checked':''}catch(x){return''}})()}> 이 브라우저에 토큰 기억하기 (공용 PC에서는 끄세요)</label>
+  <p class="mh">토큰은 HTML 파일에 저장되지 않고 이 브라우저에만 보관됩니다.</p>
+  <div class="mbtns"><button class="ap" id="gOk">저장${then?' 후 배포':''}</button>${ghTok()?'<button id="gForget" class="danger">토큰 지우기</button>':''}</div>`);
+  $('#gOk').onclick=()=>{const n={owner:$('#gOwner').value.trim(),repo:$('#gRepo').value.trim(),branch:$('#gBranch').value.trim()||'main',path:$('#gPath').value.trim().replace(/^\/+/,'')||'index.html'};
+    const tok=$('#gTok').value.trim();if(!n.owner||!n.repo||!tok){toast('아이디, 저장소, 토큰을 모두 넣어 주세요.');return}
+    D.site.gh=n;try{sessionStorage.setItem(TK,tok);if($('#gRem').checked)localStorage.setItem(TK,tok);else localStorage.removeItem(TK)}catch(x){}
+    dirty();closeModal();if(then)deploy()};
+  const fg=$('#gForget');if(fg)fg.onclick=()=>{try{localStorage.removeItem(TK);sessionStorage.removeItem(TK)}catch(x){}closeModal();toast('토큰을 지웠습니다.')}}
+async function gh(method,url,body){const r=await fetch('https://api.github.com'+url,{method,headers:{'Accept':'application/vnd.github+json','Authorization':'Bearer '+ghTok(),'X-GitHub-Api-Version':'2022-11-28',...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
+  let j=null;try{j=await r.json()}catch(x){}
+  if(!r.ok){const e=new Error((j&&j.message)||('HTTP '+r.status));e.status=r.status;throw e}return j}
+function b64OfText(s){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>{const u=String(fr.result);res(u.slice(u.indexOf(',')+1))};fr.onerror=rej;fr.readAsDataURL(new Blob([s],{type:'text/html'}))})}
+let deploying=false;
+async function deploy(force){const g=ghCfg();if(!g.owner||!g.repo||!ghTok()){ghSetup(true);return}
+  if(deploying)return;deploying=true;const btn=$('[data-act=deploy]');const label=btn.textContent;btn.disabled=true;
+  const step=m=>{btn.textContent='⏳ '+m;$('#astat').textContent=m};
+  try{const R=`/repos/${encodeURIComponent(g.owner)}/${encodeURIComponent(g.repo)}`;
+    step('저장소 확인 중');const ref=await gh('GET',`${R}/git/ref/heads/${encodeURIComponent(g.branch)}`);const head=ref.object.sha;
+    const hc=await gh('GET',`${R}/git/commits/${head}`);
+    if(!force&&D.site.baseCommit&&head!==D.site.baseCommit&&!(hc.parents||[]).some(p=>p.sha===D.site.baseCommit)){
+      deploying=false;btn.disabled=false;btn.textContent=label;$('#astat').textContent='';
+      modal(`<h3>사이트가 다른 곳에서 바뀌었습니다</h3><p class="mh">지금 편집 중인 페이지를 연 뒤에 사이트가 다시 배포되었습니다. 그대로 배포하면 그 변경이 덮어써집니다.<br>가장 안전한 방법은 배포된 사이트 주소에서 <b>#admin</b>으로 다시 들어가 편집하는 것입니다.</p><div class="mbtns"><a class="ap" style="padding:6px 12px;border-radius:10px;color:#fff;text-decoration:none" href="${siteURL(g)}#admin" target="_blank" rel="noopener">사이트에서 다시 열기</a><button id="fz" class="danger">그래도 덮어쓰기</button></div>`);
+      $('#fz').onclick=()=>{closeModal();deploy(true)};return}
+    step('페이지 만드는 중');const html=buildHTML({baseCommit:head});
+    step('파일 올리는 중');const blob=await gh('POST',`${R}/git/blobs`,{content:await b64OfText(html),encoding:'base64'});
+    const tree=await gh('POST',`${R}/git/trees`,{base_tree:hc.tree.sha,tree:[{path:g.path,mode:'100644',type:'blob',sha:blob.sha}]});
+    const d=new Date();const cm=await gh('POST',`${R}/git/commits`,{message:`관리자 모드에서 배포 (${d.toLocaleString('ko-KR')})`,tree:tree.sha,parents:[head]});
+    step('반영 중');await gh('PATCH',`${R}/git/refs/heads/${encodeURIComponent(g.branch)}`,{sha:cm.sha,force:false});
+    D.site.baseCommit=head;changed=false;try{localStorage.removeItem(KEY)}catch(x){}
+    $('#astat').textContent='배포 완료 · 1~2분 뒤 사이트에 반영됩니다 (최대 10분)';
+    modal(`<h3>🚀 배포 완료</h3><p class="mh">GitHub에 올렸습니다. 사이트에는 보통 1~2분 뒤에 반영되고, 브라우저에 예전 화면이 남아 있으면 새로고침(Ctrl+F5)하세요.</p><div class="mbtns"><a class="ap" style="padding:6px 12px;border-radius:10px;color:#fff;text-decoration:none" href="${siteURL(g)}" target="_blank" rel="noopener">사이트 열기</a><a style="padding:6px 12px;border-radius:10px;border:1px solid #ffffff22;color:#fff;text-decoration:none" href="https://github.com/${esc(g.owner)}/${esc(g.repo)}/commit/${cm.sha}" target="_blank" rel="noopener">변경 기록 보기</a></div>`);
+  }
+  catch(x){const s=x.status;$('#astat').textContent='배포 실패';
+    const why=s===401?'토큰이 맞지 않거나 만료되었습니다. 「🔑 배포 설정」에서 토큰을 다시 넣어 주세요.':s===403?'토큰에 이 저장소의 「Contents 읽기/쓰기」 권한이 없습니다.':s===404?'저장소나 브랜치를 찾을 수 없습니다. 아이디·저장소·브랜치 이름과 토큰의 저장소 선택을 확인해 주세요.':s===409||s===422?'저장소 상태가 맞지 않습니다(빈 저장소이거나 동시에 다른 변경이 있음). 잠시 후 다시 시도해 주세요.':'인터넷 연결 또는 GitHub 응답 문제입니다: '+x.message;
+    modal(`<h3>배포하지 못했습니다</h3><p class="mh">${esc(why)}</p><div class="mbtns"><button class="ap" id="rs">배포 설정 열기</button></div>`);$('#rs').onclick=()=>ghSetup(false)}
+  finally{deploying=false;btn.disabled=false;btn.textContent=label}}
 window.addEventListener('beforeunload',e=>{if(A&&changed){e.preventDefault();e.returnValue=''}});
 
 /* ---------- 클릭 처리 ---------- */
@@ -422,6 +474,8 @@ document.addEventListener('click',async e=>{
   switch(a){
     case 'mclose':closeModal();return;
     case 'export':exportHTML();return;
+    case 'deploy':deploy(false);return;
+    case 'ghsetup':ghSetup(false);return;
     case 'undo':undo();return;
     case 'preview':PREVIEW=!PREVIEW;b.textContent=PREVIEW?'✏ 편집으로':'👁 미리보기';render();return;
     case 'exit':if(changed&&!confirm('내려받지 않은 변경이 있습니다. 관리자 모드를 끝낼까요? (편집 내용은 이 브라우저에 임시 저장되어 있습니다)'))return;A=false;PREVIEW=false;render();toast('관리자 모드를 종료했습니다.');return;
